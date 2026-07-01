@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STM32 Voltage Logger</title>
+    <script src="./chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            min-height: 100vh;
+            padding: 10px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: #2d2d2d;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        
+        .header {
+            background: #3a3a3a;
+            padding: 15px;
+            text-align: center;
+            border-bottom: 1px solid #444;
+        }
+        
+        .header h1 {
+            font-size: 1.5em;
+            margin-bottom: 5px;
+            color: #4fc3f7;
+        }
+        
+        .controls {
+            background: #363636;
+            padding: 10px;
+            border-bottom: 1px solid #444;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .file-input-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .file-input-label {
+            background: #2196f3;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+        
+        .file-input-label:hover {
+            background: #1976d2;
+        }
+        
+        #fileInput {
+            display: none;
+        }
+        
+        .file-name {
+            font-size: 14px;
+            color: #ccc;
+        }
+        
+        .charts-container {
+            padding: 15px;
+        }
+        
+        .chart-wrapper {
+            background: #363636;
+            border-radius: 8px;
+            padding: 15px;
+            border: 1px solid #444;
+            position: relative;
+            cursor: grab;
+            margin-bottom: 15px;
+        }
+        
+        .chart-wrapper:last-child {
+            margin-bottom: 0;
+        }
+        
+        .chart-wrapper:active {
+            cursor: grabbing;
+        }
+        
+        .chart-title {
+            font-size: 1.1em;
+            color: #4fc3f7;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 400px;
+            width: 100%;
+        }
+        
+        .info-panel {
+            background: #3a3a3a;
+            padding: 10px;
+            margin: 0 15px 15px 15px;
+            border-radius: 5px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 8px;
+            font-size: 12px;
+        }
+        
+        .data-item {
+            padding: 6px;
+            background: #2d2d2d;
+            border-radius: 3px;
+            border: 1px solid #444;
+        }
+        
+        .instructions {
+            text-align: center;
+            padding: 10px;
+            color: #888;
+            font-size: 12px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #4fc3f7;
+        }
+        
+        .error {
+            background: #d32f2f;
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 15px;
+            text-align: center;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Voltage Logger 4X</h1>
+            <div class="instructions">
+                📁 Выберите CSV файл • 🖱️ Перетаскивание: зажатая левая кнопка мыши • 🔍 Масштаб: колесико мыши
+            </div>
+        </div>
+        
+        <div class="controls">
+            <div class="file-input-container">
+                <label for="fileInput" class="file-input-label">
+                    📂 Выбрать CSV файл
+                </label>
+                <input type="file" id="fileInput" accept=".csv">
+                <div class="file-name" id="fileName">Файл не выбран</div>
+            </div>
+        </div>
+        
+        <div class="info-panel">
+            <div class="data-item" id="fileInfo">Файл: -</div>
+            <div class="data-item" id="timeInfo">Время: -</div>
+            <div class="data-item" id="pointInfo">Точек: 0</div>
+            <div class="data-item" id="rangeInfo">Диапазон: -</div>
+        </div>
+        
+        <div class="charts-container">
+            <div class="chart-wrapper">
+                <div class="chart-title">Напряжения (Вольты)</div>
+                <div class="chart-container">
+                    <canvas id="voltageChart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div id="loading" class="loading" style="display: none;">
+            ⏳ Загрузка данных...
+        </div>
+        
+        <div id="error" class="error" style="display: none;">
+            Ошибка загрузки данных
+        </div>
+    </div>
+
+    <script>
+        class DataVisualizer {
+            constructor() {
+                this.currentFile = '';
+                this.data = [];
+                this.currentTimeWindow = 60;
+                this.currentStartTime = 0;
+                this.charts = {};
+                this.isLoading = false;
+                this.maxDataPoints = 5000;
+                this.ADC_MAX = 1023;        
+                this.VOLTAGE_REF = 3.3;     
+                this.VOLTAGE_DIVIDER_RATIO = (39 + 10) / 10; // 4.9
+                // V_real = (ADC_value / 1023) * 3.3V * 4.9
+                this.ADC_TO_VOLTS = (this.VOLTAGE_REF / this.ADC_MAX) * this.VOLTAGE_DIVIDER_RATIO;
+                
+                console.log("ADC to Volts coefficient:", this.ADC_TO_VOLTS);
+                console.log("Max measurable voltage:", 3.3 * this.VOLTAGE_DIVIDER_RATIO, "V");
+                
+                this.isDragging = false;
+                this.lastMouseX = 0;
+                this.dragSensitivity = 0.1;
+                
+                this.initializeCharts();
+                this.initializeEventListeners();
+            }
+            
+            initializeCharts() {
+                const voltageCtx = document.getElementById('voltageChart').getContext('2d');
+                this.charts.voltage = new Chart(voltageCtx, {
+                    type: 'line',
+                    data: {
+                        datasets: [
+                            {
+                                label: 'Канал 0 (V)',
+                                borderColor: '#ff4081',
+                                backgroundColor: 'rgba(255, 64, 129, 0.1)',
+                                borderWidth: 1.5,
+                                tension: 0.1,
+                                pointRadius: 0,
+                                data: []
+                            },
+                            {
+                                label: 'Канал 1 (V)',
+                                borderColor: '#ffab40',
+                                backgroundColor: 'rgba(255, 171, 64, 0.1)',
+                                borderWidth: 1.5,
+                                tension: 0.1,
+                                pointRadius: 0,
+                                data: []
+                            },
+                            {
+                                label: 'Канал 2 (V)',
+                                borderColor: '#18ffff',
+                                backgroundColor: 'rgba(24, 255, 255, 0.1)',
+                                borderWidth: 1.5,
+                                tension: 0.1,
+                                pointRadius: 0,
+                                data: []
+                            },
+                            {
+                                label: 'Канал 3 (V)',
+                                borderColor: '#ff6e40',
+                                backgroundColor: 'rgba(255, 110, 64, 0.1)',
+                                borderWidth: 1.5,
+                                tension: 0.1,
+                                pointRadius: 0,
+                                data: []
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: {
+                            mode: 'nearest',
+                            intersect: false
+                        },
+                        plugins: {
+                            tooltip: {
+                                enabled: true,
+                                mode: 'nearest',
+                                callbacks: {
+                                    label: function(context) {
+                                        return context.dataset.label + ': ' + context.parsed.y.toFixed(2) + ' V';
+                                    }
+                                }
+                            },
+                            legend: { 
+                                position: 'top',
+                                labels: {
+                                    color: '#ccc'
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'linear',
+                                title: { 
+                                    display: true, 
+                                    text: 'Время (секунды)',
+                                    color: '#ccc'
+                                },
+                                grid: { 
+                                    color: 'rgba(255,255,255,0.1)'
+                                },
+                                ticks: {
+                                    color: '#ccc'
+                                }
+                            },
+                            y: {
+                                title: { 
+                                    display: true, 
+                                    text: 'Напряжение (В)',
+                                    color: '#ccc'
+                                },
+                                grid: { 
+                                    color: 'rgba(255,255,255,0.1)'
+                                },
+                                ticks: {
+                                    color: '#ccc'
+                                },
+                                suggestedMin: 0,
+                                suggestedMax: 16
+                            }
+                        }
+                    }
+                });
+            }
+            
+            adcToVolts(adcValue) {
+                const volts = adcValue * this.ADC_TO_VOLTS;
+                console.log(`ADC: ${adcValue} -> Volts: ${volts.toFixed(2)}V`);
+                return volts;
+            }
+            
+            initializeEventListeners() {
+                document.getElementById('fileInput').addEventListener('change', (e) => {
+                    this.handleFileSelect(e.target.files[0]);
+                });
+                document.querySelectorAll('.chart-wrapper').forEach(wrapper => {
+                    wrapper.addEventListener('mousedown', this.startDrag.bind(this));
+                    wrapper.addEventListener('mousemove', this.drag.bind(this));
+                    wrapper.addEventListener('mouseup', this.stopDrag.bind(this));
+                    wrapper.addEventListener('mouseleave', this.stopDrag.bind(this));
+                    wrapper.addEventListener('wheel', this.handleWheel.bind(this));
+                });
+                document.addEventListener('selectstart', (e) => {
+                    if (this.isDragging) {
+                        e.preventDefault();
+                    }
+                });
+            }
+            
+            startDrag(e) {
+                if (e.button === 0 && this.data.length > 0) {
+                    this.isDragging = true;
+                    this.lastMouseX = e.clientX;
+                    e.currentTarget.style.cursor = 'grabbing';
+                }
+            }
+            
+            drag(e) {
+                if (this.isDragging && this.data.length > 0) {
+                    const deltaX = e.clientX - this.lastMouseX;
+                    const timeDelta = -deltaX * this.dragSensitivity;
+                    
+                    this.navigate(timeDelta);
+                    this.lastMouseX = e.clientX;
+                }
+            }
+            
+            stopDrag(e) {
+                if (this.isDragging) {
+                    this.isDragging = false;
+                    e.currentTarget.style.cursor = 'grab';
+                }
+            }
+            
+            handleWheel(e) {
+                if (this.data.length > 0) {
+                    e.preventDefault();
+                    const zoomFactor = e.deltaY > 0 ? 1.2 : 0.8;
+                    this.zoom(zoomFactor, e.offsetX / e.currentTarget.offsetWidth);
+                }
+            }
+            
+            navigate(timeDelta) {
+                if (this.data.length === 0) return;
+                
+                this.currentStartTime += timeDelta;
+                this.currentStartTime = Math.max(0, this.currentStartTime);
+                
+                const maxTime = this.data[this.data.length - 1].relativeTime;
+                if (this.currentStartTime > maxTime - this.currentTimeWindow) {
+                    this.currentStartTime = maxTime - this.currentTimeWindow;
+                }
+                
+                this.updateCharts();
+            }
+            
+            zoom(zoomFactor, mousePosition) {
+                if (this.data.length === 0) return;
+                
+                const oldWindow = this.currentTimeWindow;
+                const mouseTime = this.currentStartTime + mousePosition * oldWindow;
+                
+                this.currentTimeWindow *= zoomFactor;
+                this.currentTimeWindow = Math.max(10, Math.min(3600, this.currentTimeWindow));
+                
+                this.currentStartTime = mouseTime - mousePosition * this.currentTimeWindow;
+                
+                const maxTime = this.data[this.data.length - 1].relativeTime;
+                this.currentStartTime = Math.max(0, Math.min(maxTime - this.currentTimeWindow, this.currentStartTime));
+                
+                this.updateCharts();
+            }
+            
+            async handleFileSelect(file) {
+                if (!file) return;
+                
+                this.isLoading = true;
+                this.showLoading();
+                this.currentFile = file.name;
+                document.getElementById('fileName').textContent = file.name;
+                
+                try {
+                    const text = await this.readFileAsText(file);
+                    this.data = this.parseCSV(text);
+                    
+                    if (this.data.length === 0) {
+                        throw new Error('Файл пуст или имеет неверный формат');
+                    }
+                    
+                    this.currentStartTime = Math.max(0, this.data[this.data.length - 1].relativeTime - this.currentTimeWindow);
+                    this.updateInfo();
+                    this.updateCharts();
+                    this.hideLoading();
+                    
+                } catch (error) {
+                    this.showError('Ошибка загрузки файла: ' + error.message);
+                }
+            }
+            
+            readFileAsText(file) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = e => resolve(e.target.result);
+                    reader.onerror = reject;
+                    reader.readAsText(file);
+                });
+            }
+            
+            parseCSV(csvText) {
+                const lines = csvText.split('\n').filter(line => line.trim());
+                const data = [];
+                
+                console.log("CSV lines:", lines.length);
+                
+                // Пропускаем заголовок (первая строка)
+                for (let i = 1; i < lines.length; i++) {
+                    const parts = lines[i].split(',');
+                    if (parts.length >= 5) {
+                        try {
+                            const timestamp = parseInt(parts[0]);
+                            const analog0 = parseInt(parts[1]);
+                            const analog1 = parseInt(parts[2]);
+                            const analog2 = parseInt(parts[3]);
+                            const analog3 = parseInt(parts[4]);
+                            
+                            if (isNaN(timestamp) || isNaN(analog0) || isNaN(analog1) || isNaN(analog2) || isNaN(analog3)) {
+                                continue;
+                            }
+                            
+                            data.push({
+                                timestamp: timestamp,
+                                relativeTime: timestamp / 1000, // переводим в секунды
+                                // Преобразуем АЦП в вольты
+                                voltage0: this.adcToVolts(analog0),
+                                voltage1: this.adcToVolts(analog1),
+                                voltage2: this.adcToVolts(analog2),
+                                voltage3: this.adcToVolts(analog3),
+                                // Сохраняем сырые значения для отладки
+                                raw0: analog0,
+                                raw1: analog1,
+                                raw2: analog2,
+                                raw3: analog3
+                            });
+                        } catch (e) {
+                            console.warn('Ошибка парсинга строки:', lines[i], e);
+                        }
+                    }
+                }
+                
+                console.log("Parsed data points:", data.length);
+                if (data.length > 0) {
+                    console.log("First data point:", data[0]);
+                    console.log("Last data point:", data[data.length - 1]);
+                }
+
+                if (data.length > this.maxDataPoints) {
+                    const step = Math.ceil(data.length / this.maxDataPoints);
+                    return data.filter((_, index) => index % step === 0);
+                }
+                
+                return data;
+            }
+            
+            updateCharts() {
+                if (this.data.length === 0) return;
+                
+                const filteredData = this.getFilteredData();
+                this.updateVoltageChart(filteredData);
+                this.updateRangeInfo();
+            }
+            
+            getFilteredData() {
+                const endTime = this.currentStartTime + this.currentTimeWindow;
+                return this.data.filter(point => 
+                    point.relativeTime >= this.currentStartTime && 
+                    point.relativeTime <= endTime
+                );
+            }
+            
+            updateVoltageChart(data) {
+                const dataset1 = data.map(p => ({x: p.relativeTime, y: p.voltage0}));
+                const dataset2 = data.map(p => ({x: p.relativeTime, y: p.voltage1}));
+                const dataset3 = data.map(p => ({x: p.relativeTime, y: p.voltage2}));
+                const dataset4 = data.map(p => ({x: p.relativeTime, y: p.voltage3}));
+                
+                this.charts.voltage.data.datasets[0].data = dataset1;
+                this.charts.voltage.data.datasets[1].data = dataset2;
+                this.charts.voltage.data.datasets[2].data = dataset3;
+                this.charts.voltage.data.datasets[3].data = dataset4;
+                
+                this.charts.voltage.update('none');
+            }
+            
+            updateRangeInfo() {
+                if (this.data.length > 0) {
+                    const start = this.currentStartTime;
+                    const end = start + this.currentTimeWindow;
+                    const total = this.data[this.data.length - 1].relativeTime;
+                    document.getElementById('rangeInfo').textContent = 
+                        `Показано: ${start.toFixed(1)}-${end.toFixed(1)}с из ${total.toFixed(1)}с`;
+                }
+            }
+            
+            updateInfo() {
+                document.getElementById('fileInfo').textContent = `Файл: ${this.currentFile}`;
+                document.getElementById('pointInfo').textContent = `Точек: ${this.data.length.toLocaleString()}`;
+                
+                if (this.data.length > 0) {
+                    const duration = (this.data[this.data.length - 1].timestamp - this.data[0].timestamp) / 1000;
+                    document.getElementById('timeInfo').textContent = 
+                        `Длительность: ${Math.round(duration)}с`;
+                } else {
+                    document.getElementById('timeInfo').textContent = 'Время: -';
+                    document.getElementById('rangeInfo').textContent = 'Диапазон: -';
+                }
+            }
+            
+            showLoading() {
+                document.getElementById('loading').style.display = 'block';
+                document.getElementById('error').style.display = 'none';
+            }
+            
+            hideLoading() {
+                document.getElementById('loading').style.display = 'none';
+            }
+            
+            showError(message) {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('error').style.display = 'block';
+                document.getElementById('error').textContent = message;
+                this.isLoading = false;
+            }
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            new DataVisualizer();
+        });
+    </script>
+</body>
+</html>
